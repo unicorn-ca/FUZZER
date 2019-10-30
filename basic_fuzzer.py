@@ -36,7 +36,7 @@ def get_artifacts(spec):
             print('Warning', 'Found exception when trying to load object body', e)
             artifact['data'] = None
 
-        artifacts[artif_spec['name'] = artifact
+        artifacts[artif_spec['name']] = artifact
     return artifacts
 
 def handler(event, context):
