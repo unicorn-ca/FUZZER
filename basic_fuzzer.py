@@ -16,34 +16,10 @@ def pipeline_status(job, success):
     else:
         cp_client.put_job_failure_result(jobId=job)
 
-def get_artifacts(spec):
-    artifacts = {}
-    s3_client = boto3.client('s3')
-
-    for artif_spec in spec:
-        if artif_spec['location']['type'] != 'S3':
-            raise Exception('Expected S3 artifact bucket')
-
-        loc = artif_spec['location']['s3Location']
-        obj = s3_client.get_object(Bucket=loc['bucketName'], Key=loc['objectKey'])
-        artifact = { 
-            'specification': artif_spec,
-            'artifact': obj
-        }
-        try:
-            artifact['data'] = json.loads(obj['Body'].read().decode('utf-8'))
-        except Exception as e:
-            print('Warning', 'Found exception when trying to load object body', e)
-            artifact['data'] = None
-
-        artifacts[artif_spec['name']] = artifact
-    return artifacts
-
 def handler(event, context):
     job_id = event['CodePipeline.job']['id']
     print(job_id)
-    print(event['CodePipeline.job']['data']['inputArtifacts'])
-    print(get_artifacts(event['CodePipeline.job']['data']['inputArtifacts']))
+    print(event['actionConfiguration']['configuration']['UserParameters'])
 
     # falsification set not provided, need to produce generate for sql
     # very basic example for rest api from https://hypothesis.readthedocs.io/en/latest/examples.html
