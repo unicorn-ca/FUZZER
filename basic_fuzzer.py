@@ -21,7 +21,7 @@ def get_artifacts(spec):
     s3_client = boto3.client('s3')
 
     for artif_spec in spec:
-        if spec['location']['type'] != 'S3':
+        if artif_spec['location']['type'] != 'S3':
             raise Exception('Expected S3 artifact bucket')
 
         loc = artif_spec['location']['s3Location']
