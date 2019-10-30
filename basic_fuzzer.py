@@ -82,6 +82,7 @@ def handler(event, context):
                     })
 
     print("Starting Tests")
-    return fuzz()
+    ret = fuzz()
     pipeline_status(job_id, True)
+    return ret
 
