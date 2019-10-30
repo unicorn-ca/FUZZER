@@ -61,6 +61,8 @@ def handler(event, context):
                 pipeline_status(job_id, True)
             else:
                 pipeline_status(job_id, False)
+        else:
+            pipeline_status(job_id, False)
 
     return fuzz()
 
