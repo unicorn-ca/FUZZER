@@ -70,7 +70,7 @@ def handler(event, context):
         response = requests.get("https://vtvmemmfce.execute-api.us-east-2.amazonaws.com/dev",params=s)
         print(f"https status is {response.json()}")
 
-        if response.status_code == 200:
+        if response.ok:
             r = response.json()
             if 'result' in r:
                 if r['result'] == "None":
@@ -80,6 +80,12 @@ def handler(event, context):
                         'type': 'JobFailed',
                         'message': f"Failed test {s}"
                     })
+        else:
+            # Dubious decision
+            pipeline_status(job_id, False, details={
+                'type': 'JobFailed',
+                'message': f"Failed test {s} - expected 2xx, got {response.status_code}"
+            })
 
     print("Starting Tests")
     ret = fuzz()
