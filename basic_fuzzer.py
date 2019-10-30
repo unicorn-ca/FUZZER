@@ -41,6 +41,7 @@ def get_artifacts(spec):
 
 def handler(event, context):
     job_id = event['CodePipeline.job']['id']
+    print(job_id)
     print(event['CodePipeline.job']['data']['inputArtifacts'])
     print(get_artifacts(event['CodePipeline.job']['data']['inputArtifacts']))
 
