@@ -2,6 +2,7 @@ import boto3
 import requests
 from hypothesis import given, assume, settings, HealthCheck, Verbosity, strategies as st
 from datetime import timedelta
+import urllib.parse
 
 
 def read_payload():
@@ -51,25 +52,30 @@ def get_stack_api_endpoint(stack_name):
     else:
         raise Exception(f'Did not find "{APIENDPOINT_OUTPUT_KEY}" output')
 
+'''
+return api definition, might be useful to blind fuzz each endpoint with strategy and return which property fn was triggered
+'''
+def get_api_gateway_endpoints():
+    pass
+
+#'OR 1%3d1 -- %20;
+# https://hackertarget.com/sqlmap-tutorial/
 def handler(event, context):
     job_id = event['CodePipeline.job']['id']
     print(f"Starting job {job_id}")
     stack_name = event['CodePipeline.job']['data']['actionConfiguration']['configuration']['UserParameters']
     api_endpoint = get_stack_api_endpoint(stack_name)
+    # this works SELECT pb_sleep(15)
     print(f"Fetched {api_endpoint} from {stack_name}")
-
-    # falsification set not provided, need to produce generate for sql
-    # very basic example for rest api from https://hypothesis.readthedocs.io/en/latest/examples.html
+    #"SELECT * FROM test WHERE username=' ' union select '1', pb_sleep(15) --  ';'"
     @settings(verbosity=Verbosity.verbose, deadline=timedelta(seconds=15), max_examples=15)
     # composite strategies, draw from total corpus of vulnerabilities
-    @given(st.sampled_from(read_payload()))
-    def fuzz(s):
+    @given(st.sampled_from(read_payload())|st.email())
+    def fuzz_sqli(s):
         #params = {'vuln-string': vuln}
-        print(type(s))
         # add dymanic get from lambda api gateway endpoints, sign with IAM secret key for api gateway
         response = requests.get("https://vtvmemmfce.execute-api.us-east-2.amazonaws.com/dev",params=s)
         print(f"https status is {response.json()}")
-
         if response.ok:
             r = response.json()
             if 'result' in r:
@@ -86,9 +92,20 @@ def handler(event, context):
                 'type': 'JobFailed',
                 'message': f"Failed test {s} - expected 2xx, got {response.status_code}"
             })
+        # asserts?
+    #all vulnerabilities template for remaining
+    def fuzz():
+        pass
+
+
 
     print("Starting Tests")
-    ret = fuzz()
+    ret = fuzz_sqli()
     pipeline_status(job_id, True)
     return ret
 
+# if __name__ =="__main__":
+#     s={'vuln-string': r" ' union select '1', pb_sleep(5) --  ';'"}
+#     response = requests.get("https://vtvmemmfce.execute-api.us-east-2.amazonaws.com/dev",params=s)
+#     print(response.json())
+#     print(response.url)
