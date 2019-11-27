@@ -3,12 +3,9 @@ import requests
 from hypothesis import given, assume, settings, HealthCheck, Verbosity, strategies as st
 from datetime import timedelta
 import urllib.parse
-
-
-def read_payload():
-    with open("FUZZDB_Postgres_Enumeration.txt",'r') as infile:
-        blns = infile.readlines()
-    return blns
+import os
+import random
+import sys
 
 def pipeline_status(job, success, details={}):
     cp_client = boto3.client('codepipeline')
@@ -34,11 +31,9 @@ def get_account_client(client, account):
                                  aws_session_token=creds['Credentials']['SessionToken'])
     return sess.client(client)
     
-
 def get_stack_api_endpoint(stack_name):
     client = get_account_client('cloudformation', 'dev')
     stack = client.describe_stacks(StackName=stack_name)
-
     if len(stack['Stacks']) > 1:
         print('Warning', 'Found more than one stack, taking [0]')
 
@@ -52,60 +47,59 @@ def get_stack_api_endpoint(stack_name):
     else:
         raise Exception(f'Did not find "{APIENDPOINT_OUTPUT_KEY}" output')
 
-'''
-return api definition, might be useful to blind fuzz each endpoint with strategy and return which property fn was triggered
-'''
-def get_api_gateway_endpoints():
-    pass
-
-#'OR 1%3d1 -- %20;
-# https://hackertarget.com/sqlmap-tutorial/
 def handler(event, context):
     job_id = event['CodePipeline.job']['id']
     print(f"Starting job {job_id}")
     stack_name = event['CodePipeline.job']['data']['actionConfiguration']['configuration']['UserParameters']
     api_endpoint = get_stack_api_endpoint(stack_name)
-    # this works SELECT pb_sleep(15)
     print(f"Fetched {api_endpoint} from {stack_name}")
-    #"SELECT * FROM test WHERE username=' ' union select '1', pb_sleep(15) --  ';'"
+    vuln_string = ["1' or (SELECT count(*) FROM generate_series(1, 10000000))='10000000' -- "]
+    log_list=[]
     @settings(verbosity=Verbosity.verbose, deadline=timedelta(seconds=15), max_examples=15)
-    # composite strategies, draw from total corpus of vulnerabilities
-    @given(st.sampled_from(read_payload())|st.email())
+    @given(st.sampled_from([vuln_string])|st.emails())
     def fuzz_sqli(s):
-        #params = {'vuln-string': vuln}
+            base_url = None
+            params = {'vuln-string': s}
+            log_list.append(f"Trying payload {params} using url {base_url}")
         # add dymanic get from lambda api gateway endpoints, sign with IAM secret key for api gateway
-        response = requests.get("https://vtvmemmfce.execute-api.us-east-2.amazonaws.com/dev",params=s)
-        print(f"https status is {response.json()}")
-        if response.ok:
-            r = response.json()
-            if 'result' in r:
-                if r['result'] == "None":
-                    pipeline_status(job_id, True)
-                else:
-                    pipeline_status(job_id, False, details={
-                        'type': 'JobFailed',
-                        'message': f"Failed test {s}"
-                    })
-        else:
-            # Dubious decision
-            pipeline_status(job_id, False, details={
-                'type': 'JobFailed',
-                'message': f"Failed test {s} - expected 2xx, got {response.status_code}"
-            })
-        # asserts?
-    #all vulnerabilities template for remaining
-    def fuzz():
-        pass
-
-
-
+            response = requests.get(f"{base_url}/sqli_vuln",params=params)
+            print(f"request made with {response.url} endpoint")
+            print(f"https status is {response.json()}")
+            if response.ok:
+                r = response.json()
+                if 'result' in r:
+                    if r['result'] == "None" or len(r['result']==0):
+                        pipeline_status(job_id, True)
+                    else:
+                        pipeline_status(job_id, False, details={
+                            'type': 'JobFailed',
+                            'message': f"Failed test {s}"
+                        })
+                        assert r['result'] == "None"
+            else:
+                # Dubious decision
+                # just log output
+                pipeline_status(job_id, False, details={
+                    'type': 'JobFailed',
+                    'message': f"Failed test {s} - expected 2xx, got {response.status_code}"
+                })
+            # asserts?
     print("Starting Tests")
-    ret = fuzz_sqli()
-    pipeline_status(job_id, True)
-    return ret
-
-# if __name__ =="__main__":
-#     s={'vuln-string': r" ' union select '1', pb_sleep(5) --  ';'"}
-#     response = requests.get("https://vtvmemmfce.execute-api.us-east-2.amazonaws.com/dev",params=s)
-#     print(response.json())
-#     print(response.url)
+    try:
+        ret = fuzz_sqli()
+    except (Exception,AssertionError) as e:
+        print(f"Fuzzer failed with exception in execution {e}")
+        pipeline_status(job_id, False, details={
+    'type': 'JobFailed',
+    'message': f"Failed test with assertion raised {e} - expected 2xx"
+    })
+    else:
+        pipeline_status(job_id, True)
+        s3 = boto3.client('s3')
+        # bucket_name = os.environ['BUCKET_NAME'] # Supplied by Function service-discovery wire
+        bucket_name = "fuzzerlambda"
+        file_name = f"debug{random.randint(0,sys.maxsize)}.log"
+        s3_path = "logs/" + file_name
+        s3 = boto3.resource("s3")
+        response=s3.Bucket(bucket_name).put_object(Key=s3_path, Body=str.encode("\n".join(log_list)))
+        return ret
