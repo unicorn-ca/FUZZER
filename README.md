@@ -1,5 +1,7 @@
 # Horn
 
+![Horn-Logo](horn-logo.png)
+
 The unicorn-ca Fuzzer
 
 ## Contribution
