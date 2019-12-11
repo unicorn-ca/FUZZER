@@ -7,6 +7,7 @@ import os
 import random
 import sys
 
+#========== Interaction Layer ==========#
 def pipeline_status(job, success, details={}):
     cp_client = boto3.client('codepipeline')
     if success:
@@ -14,46 +15,68 @@ def pipeline_status(job, success, details={}):
     else:
         cp_client.put_job_failure_result(jobId=job, failureDetails=details)
 
-APIENDPOINT_OUTPUT_KEY = 'ServiceEndpoint'
 SNOOPER_ROLE = 'arn:aws:iam::171350118496:role/unicorn-xaccount-cfm-stack-snooper'
-def get_account_client(client, account):
-    print(f"Obtaining STS token for {account}")
+def get_account_session(account):
+    print(f"Obtaining STS token for {account['stage']}")
     sts_client = boto3.client('sts')
     creds = sts_client.assume_role(
-        RoleArn=SNOOPER_ROLE,
-        RoleSessionName='temp-chen-lambda-access',
+        RoleArn=f'arn:aws:iam::{account["account_id"]}:role/{account["snooper"]}',
+        RoleSessionName=f'unicorn-fuzzer-{account}-0xdeadbeef',  # TODO: generate unique
         DurationSeconds=900
     )
-    
+
     print(f"Starting {client} on cross-account session")
     sess = boto3.session.Session(aws_access_key_id=creds['Credentials']['AccessKeyId'],
                                  aws_secret_access_key=creds['Credentials']['SecretAccessKey'],
                                  aws_session_token=creds['Credentials']['SessionToken'])
-    return sess.client(client)
-    
-def get_stack_api_endpoint(stack_name):
-    client = get_account_client('cloudformation', 'dev')
-    stack = client.describe_stacks(StackName=stack_name)
-    if len(stack['Stacks']) > 1:
-        print('Warning', 'Found more than one stack, taking [0]')
+    return sess
 
-    stack = stack['Stacks'][0]
-    if stack['StackStatus'] != 'CREATE_COMPLETE' and stack['StackStatus'] != 'UPDATE_COMPLETE':
-        raise Exception('Stack is not ready')
+def get_stack_api_endpoints(stack_name, meta):
+    remote_session = get_account_session(meta)
 
-    for output in stack['Outputs']:
-        if output['OutputKey'] == APIENDPOINT_OUTPUT_KEY:
-            return output['OutputValue']
-    else:
-        raise Exception(f'Did not find "{APIENDPOINT_OUTPUT_KEY}" output')
+    cfm_client = remote_session.client('cloudformation')
+    gateways = find_stack_resources(cfm_client, stack_name, {'AWS::ApiGateway'})
+
+    endpoints = []
+    ag_client = remote_session.client('apigatewayv2')
+    for gateway in gateways:
+        endpoint = {'endpoint': None, 'routes': []}
+
+        api_data   = ag_client.get_api(ApiId=gateway['PhysicalResourceId'])
+        endpoint['endpoint'] = api_data['ApiEndpoint']
+
+        for page in ag_client.get_paginator('get_routes').paginate(ApiId=gateway['PhysicalResourceId']):
+            for ep in page['Items']:
+                endpoint['routes'].append(ep['RouteKey'])
+
+        endpoints.append(endpoint)
+
+    return endpoints
+
+
+def find_stack_resources(client, stack_name, allowed_types=set()):
+    found = []
+    for resource_list in client.get_paginator('list_stack_resources').paginate(StackName='String'):
+        for resource in resource_list['StackResourceSummaries']:
+            if resource['ResourceType'] in allowed_types:
+                found.append(resource)
+    return found
+
+#========== END Interaction Layer ==========#
 
 def handler(event, context):
     job_id = event['CodePipeline.job']['id']
+
     print(f"Starting job {job_id}")
-    stack_name = event['CodePipeline.job']['data']['actionConfiguration']['configuration']['UserParameters']
-    api_endpoint = get_stack_api_endpoint(stack_name)
+    user_parameters = event['CodePipeline.job']['data']['actionConfiguration']['configuration']['UserParameters']
+    user_parameters = json.loads(user_parameters)
+
+    stack_name = user_parameters['stack_name']
+    api_endpoints = get_stack_api_endpoint(stack_name, user_parameters)
+
     print(f"Fetched {api_endpoint} from {stack_name}")
     vuln_string = ["1' or (SELECT count(*) FROM generate_series(1, 10000000))='10000000' -- "]
+
     log_list=[]
     @settings(verbosity=Verbosity.verbose, deadline=timedelta(seconds=15), max_examples=15)
     @given(st.sampled_from([vuln_string])|st.emails())
@@ -85,14 +108,18 @@ def handler(event, context):
                 })
             # asserts?
     print("Starting Tests")
+
     try:
-        ret = fuzz_sqli()
+        ret = []
+        for end, routes in endpoints.items():
+            for route in routes:
+                ret.append(fuzz_sqli())
     except (Exception,AssertionError) as e:
         print(f"Fuzzer failed with exception in execution {e}")
         pipeline_status(job_id, False, details={
-    'type': 'JobFailed',
-    'message': f"Failed test with assertion raised {e} - expected 2xx"
-    })
+            'type': 'JobFailed',
+            'message': f"Failed test with assertion raised {e} - expected 2xx"
+        })
     else:
         pipeline_status(job_id, True)
         s3 = boto3.client('s3')
