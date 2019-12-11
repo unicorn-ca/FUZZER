@@ -6,6 +6,8 @@ import urllib.parse
 import os
 import random
 import sys
+import json
+import time
 
 #========== Interaction Layer ==========#
 def pipeline_status(job, success, details={}):
@@ -21,11 +23,11 @@ def get_account_session(account):
     sts_client = boto3.client('sts')
     creds = sts_client.assume_role(
         RoleArn=f'arn:aws:iam::{account["account_id"]}:role/{account["snooper"]}',
-        RoleSessionName=f'unicorn-fuzzer-{account}-0xdeadbeef',  # TODO: generate unique
+        RoleSessionName=f'unicorn-fuzzer-{account["stage"]}-{int(time.time()*1000)}',
         DurationSeconds=900
     )
 
-    print(f"Starting {client} on cross-account session")
+    print(f"Starting client on cross-account session")
     sess = boto3.session.Session(aws_access_key_id=creds['Credentials']['AccessKeyId'],
                                  aws_secret_access_key=creds['Credentials']['SecretAccessKey'],
                                  aws_session_token=creds['Credentials']['SessionToken'])
@@ -35,19 +37,19 @@ def get_stack_api_endpoints(stack_name, meta):
     remote_session = get_account_session(meta)
 
     cfm_client = remote_session.client('cloudformation')
-    gateways = find_stack_resources(cfm_client, stack_name, {'AWS::ApiGateway'})
+    gateways = find_stack_resources(cfm_client, stack_name, {'AWS::ApiGateway::RestApi'})
 
     endpoints = []
-    ag_client = remote_session.client('apigatewayv2')
+    ag_client = remote_session.client('apigateway')
     for gateway in gateways:
         endpoint = {'endpoint': None, 'routes': []}
 
-        api_data   = ag_client.get_api(ApiId=gateway['PhysicalResourceId'])
-        endpoint['endpoint'] = api_data['ApiEndpoint']
+        # TODO: region
+        endpoint['endpoint'] = f'https://{gateway["PhysicalResourceId"]}.execute-api.ap-southeast-2.amazonaws.com'
 
-        for page in ag_client.get_paginator('get_routes').paginate(ApiId=gateway['PhysicalResourceId']):
-            for ep in page['Items']:
-                endpoint['routes'].append(ep['RouteKey'])
+        for page in ag_client.get_paginator('get_resources').paginate(restApiId=gateway['PhysicalResourceId']):
+            for ep in page['items']:
+                endpoint['routes'].append(ep['path'])
 
         endpoints.append(endpoint)
 
@@ -56,7 +58,7 @@ def get_stack_api_endpoints(stack_name, meta):
 
 def find_stack_resources(client, stack_name, allowed_types=set()):
     found = []
-    for resource_list in client.get_paginator('list_stack_resources').paginate(StackName='String'):
+    for resource_list in client.get_paginator('list_stack_resources').paginate(StackName=stack_name):
         for resource in resource_list['StackResourceSummaries']:
             if resource['ResourceType'] in allowed_types:
                 found.append(resource)
@@ -72,9 +74,10 @@ def handler(event, context):
     user_parameters = json.loads(user_parameters)
 
     stack_name = user_parameters['stack_name']
-    api_endpoints = get_stack_api_endpoint(stack_name, user_parameters)
+    api_endpoints = get_stack_api_endpoints(stack_name, user_parameters)
+    print(api_endpoints)
 
-    print(f"Fetched {api_endpoint} from {stack_name}")
+    print(f"Fetched {len(api_endpoints)} api gateways from {stack_name}")
     vuln_string = ["1' or (SELECT count(*) FROM generate_series(1, 10000000))='10000000' -- "]
 
     log_list=[]
