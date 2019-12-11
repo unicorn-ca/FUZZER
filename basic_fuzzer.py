@@ -81,11 +81,10 @@ def handler(event, context):
     @settings(verbosity=Verbosity.verbose, deadline=timedelta(seconds=15), max_examples=15)
     @given(st.sampled_from([vuln_string])|st.emails())
     def fuzz_sqli(s):
-            base_url = None
             params = {'vuln-string': s}
             log_list.append(f"Trying payload {params} using url {base_url}")
         # add dymanic get from lambda api gateway endpoints, sign with IAM secret key for api gateway
-            response = requests.get(f"{base_url}/sqli_vuln",params=params)
+            response = requests.get(f"{base_url}/{url_ep}",params=params)
             print(f"request made with {response.url} endpoint")
             print(f"https status is {response.json()}")
             if response.ok:
@@ -113,6 +112,8 @@ def handler(event, context):
         ret = []
         for end, routes in endpoints.items():
             for route in routes:
+                base_url = end
+                url_ep = route
                 ret.append(fuzz_sqli())
     except (Exception,AssertionError) as e:
         print(f"Fuzzer failed with exception in execution {e}")
